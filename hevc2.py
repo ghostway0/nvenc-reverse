@@ -35,7 +35,6 @@ class RStructure(ctypes.Structure):
         for field_name, field_type in getattr(self, "_fields_", []):
             try:
                 value = getattr(self, field_name)
-                # if it's a ctypes array, convert to list
                 if isinstance(value, ctypes.Array):
                     value = list(value)
             except Exception:
@@ -171,6 +170,7 @@ class HEVCDecoder:
             if disp.picture_index < len(self.ctx.surface_in_use):
                 self.ctx.surface_in_use[disp.picture_index] = True
             self.ctx.frame_queue.put(disp)
+            os._exit(0)
             return 1
 
         self.callbacks = (sequence_cb, decode_cb, display_cb)
@@ -191,6 +191,7 @@ class HEVCDecoder:
 
             self.ctx.decoder = CUvideodecoder()
             result = libnvcuvid.cuvidCreateDecoder(ctypes.byref(self.ctx.decoder), ctypes.byref(create_info))
+            print(hex(ctypes.c_uint64.from_address(libnvcuvid._handle).value))
 
             from thing import hook_mem, install_mem_hooks
             a = ctypes.c_uint64.from_address(self.ctx.decoder.value + 0x8).value
@@ -278,7 +279,6 @@ def run():
 
             mapped_ptr, pitch, pic_idx = frame_data
             decoder.release_frame(mapped_ptr, pic_idx)
-        print(open("/proc/self/maps").read())
 
     decoder.cleanup()
 

@@ -309,7 +309,8 @@ def sigsegv_handler(signum, siginfo_p, ucontext_p):
     else:
         return
 
-    print(hex(regs.rip), hex(fault_addr), f"{hex(start)}-{hex(end)}")
+    # hardcoded base address..
+    print(hex(regs.rip - 0x5000000), hex(fault_addr), f"{hex(start)}-{hex(end)}")
     libc.mprotect(start, end - start, 0x3)
 
     regs.eflags = ctypes.c_size_t(regs.eflags | (1 << 8)) # TF_MASK
@@ -345,6 +346,9 @@ def install_mem_hooks():
     libc.sigaction(signal.SIGTRAP, ctypes.byref(SigAction(sa_sigaction=sigtrap_handler, sa_flags=0x4)), None) # SA_SIGINFO
 
 # hook_fifo = lambda g: hook_mem(rm[g].gpFifoOffset, rm[g].gpFifoOffset + rm[g].gpFifoEntries * 4)
+
+def library_base(lib):
+    return ctypes.c_uint64.from_address(lib._handle)
 
 if __name__ == "__main__":
     CUhandle = ctypes.c_void_p
