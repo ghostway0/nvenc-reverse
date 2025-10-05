@@ -163,9 +163,6 @@ class HEVCDecoder:
         @PFNVIDDECODECALLBACK
         def decode_cb(user_data, pic_params):
             result = libnvcuvid.cuvidDecodePicture(self.ctx.decoder, pic_params)
-            a = ctypes.c_uint64.from_address(self.ctx.decoder.value + 0x8).value
-            b = ctypes.c_uint64.from_address(a + 0x23c4a8).value
-            print(hex(b + 0x270 * 0x6 + 0x198 + 0x60), hex(ctypes.c_uint64.from_address(b + 0x270 * 0x6 + 0x198 + 0x60).value))
             return 1 if result == CUDA_SUCCESS else 0
 
         @PFNVIDDISPLAYCALLBACK
@@ -195,14 +192,12 @@ class HEVCDecoder:
             self.ctx.decoder = CUvideodecoder()
             result = libnvcuvid.cuvidCreateDecoder(ctypes.byref(self.ctx.decoder), ctypes.byref(create_info))
 
-            iface = ctypes.c_uint64.from_address(ctypes.addressof(self.ctx.decoder))
-            # for i in range(0, 0x50, 8):
-            #     val = ctypes.c_uint64.from_address(iface.value + i).value
-            #     print(f"{i:#018x}: {val:#018x}")
+            from thing import hook_mem, install_mem_hooks
             a = ctypes.c_uint64.from_address(self.ctx.decoder.value + 0x8).value
             b = ctypes.c_uint64.from_address(a + 0x23c4a8).value
-            signal.signal(hex(b + 0x270 * 0x6 + 0x198 + 0x60), hex(ctypes.c_uint64.from_address(b + 0x270 * 0x6 + 0x198 + 0x60).value))
-            os._exit(1)
+            addr = ctypes.c_uint64.from_address(b + 0x270 * 0x6 + 0x198 + 0x60).value
+            hook_mem(addr & (~0xFFF), 0x30000)
+            install_mem_hooks()
 
             if result == CUDA_SUCCESS:
                 self.ctx.width, self.ctx.height = width, height

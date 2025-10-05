@@ -1,4 +1,4 @@
-import ctypes, os, struct, time
+import ctypes, os, struct, time, signal, threading
 
 libc = ctypes.CDLL("/lib64/libc.so.6")
 
@@ -114,14 +114,14 @@ class NVOS21_PARAMETERS(RStructure):
 fds = {}
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
-def open(path, flags):
+def hook_open(path, flags):
     r = original["open"](ctypes.c_void_p(path), ctypes.c_int(flags))
     s = ctypes.string_at(path, 256)
     fds[r] = s[:s.find(b"\0")]
     return r
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
-def openat(dirfd, path, flags):
+def hook_openat(dirfd, path, flags):
     print("open")
     r = original["openat"](ctypes.c_int(dirfd), ctypes.c_void_p(path), ctypes.c_int(flags))
     s = ctypes.string_at(path, 256)
@@ -162,7 +162,7 @@ class NVOS54_PARAMETERS(RStructure):
 tokens = []
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p)
-def ioctl(fd, cmd, argp):
+def hook_ioctl(fd, cmd, argp):
     token = struct.pack("I", 0xc36f0108)
     d, ty, nr, paramsz = (cmd >> 30) & 3, (cmd >> 8) & 0xff, cmd & 0xff, (cmd >> 16) & 0xfff
     argbuf = bytearray(ctypes.string_at(argp, paramsz))
@@ -195,22 +195,9 @@ def ioctl(fd, cmd, argp):
 
     return original["ioctl"](ctypes.c_int(fd), ctypes.c_ulong(cmd), ctypes.c_void_p(argp))
 
-import hevc2
-
-original["ioctl"] = hook(libc["ioctl"], ioctl)
-original["open"] = hook(libc["open"], open)
-original["openat"] = hook(libc["openat"], openat)
-
-CUhandle = ctypes.c_void_p
-libcuda = ctypes.CDLL("/lib64/libcuda.so")
-libcuda.cuInit(0)
-
-dev = CUhandle()
-ctx = CUhandle()
-
-libcuda.cuDeviceGet(ctypes.byref(dev), 0)
-libcuda.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev)
-libcuda.cuCtxPushCurrent(ctx)
+# original["ioctl"] = hook(libc["ioctl"], hook_ioctl)
+# original["open"] = hook(libc["open"], hook_open)
+# original["openat"] = hook(libc["openat"], hook_openat)
 
 class SigAction(RStructure):
     _fields_ = [
@@ -230,8 +217,8 @@ class SigSegvInfo(RStructure):
         ("si_addr", ctypes.c_void_p),
         ("si_addr_lsb", ctypes.c_short),
         ("_pad1", ctypes.c_short * 3),
-        ("_bounds_lower", ctypes.c_void_p),
-        ("_bounds_upper", ctypes.c_void_p),
+        ("si_lower", ctypes.c_void_p),
+        ("si_higher", ctypes.c_void_p),
         ("_pkey", ctypes.c_uint32),
     ]
 
@@ -248,33 +235,52 @@ def unwind_from_rsp(rbp):
         rbp = prev_rbp
     return trace
 
-NGREG = 23
-
-# greg_t is "long long" on x86_64
-greg_t = ctypes.c_longlong
-
-# typedef greg_t gregset_t[NGREG];
-gregset_t = greg_t * NGREG
-
-class MContext(ctypes.Structure):
+class GRegs(RStructure):
     _fields_ = [
-        ("gregs", gregset_t),
-        ("fpregs", ctypes.c_void_p),                # fpregset_t is pointer
-        ("__reserved1", ctypes.c_ulonglong * 8),    # reserved space
+        ("r8", ctypes.c_size_t),
+        ("r9", ctypes.c_size_t),
+        ("r10", ctypes.c_size_t),
+        ("r11", ctypes.c_size_t),
+        ("r12", ctypes.c_size_t),
+        ("r13", ctypes.c_size_t),
+        ("r14", ctypes.c_size_t),
+        ("r15", ctypes.c_size_t),
+        ("rdi", ctypes.c_size_t),
+        ("rsi", ctypes.c_size_t),
+        ("rbp", ctypes.c_size_t),
+        ("rbx", ctypes.c_size_t),
+        ("rdx", ctypes.c_size_t),
+        ("rax", ctypes.c_size_t),
+        ("rcx", ctypes.c_size_t),
+        ("rsp", ctypes.c_size_t),
+        ("rip", ctypes.c_size_t),
+        ("eflags", ctypes.c_size_t),
+        ("csgsfs", ctypes.c_size_t),
+        ("err", ctypes.c_size_t),
+        ("trapno", ctypes.c_size_t),
+        ("oldmask", ctypes.c_size_t),
+        ("cr2", ctypes.c_size_t),
     ]
 
-class StackT(ctypes.Structure):
+class MContext(RStructure):
+    _fields_ = [
+        ("gregs", GRegs),
+        ("fpregs", ctypes.c_void_p),
+        ("__reserved1", ctypes.c_ulonglong * 8),
+    ]
+
+
+class StackT(RStructure):
     _fields_ = [
         ("ss_sp", ctypes.c_void_p),
         ("ss_flags", ctypes.c_int),
         ("ss_size", ctypes.c_size_t),
     ]
 
-class SigSet(ctypes.Structure):
-    _fields_ = [("_val", ctypes.c_ulong * 16)]     # 1024 bits
+class SigSet(RStructure):
+    _fields_ = [("_val", ctypes.c_ulong * 16)]
 
-# ucontext_t
-class UContext(ctypes.Structure):
+class UContext(RStructure):
     _fields_ = [
         ("uc_flags", ctypes.c_ulong),
         ("uc_link", ctypes.POINTER('UContext')),
@@ -285,61 +291,71 @@ class UContext(ctypes.Structure):
         ("__ssp", ctypes.c_ulonglong * 4),
     ]
 
-REG_R8     = 0
-REG_R9     = 1
-REG_R10    = 2
-REG_R11    = 3
-REG_R12    = 4
-REG_R13    = 5
-REG_R14    = 6
-REG_R15    = 7
-REG_RDI    = 8
-REG_RSI    = 9
-REG_RBP    = 10
-REG_RBX    = 11
-REG_RDX    = 12
-REG_RAX    = 13
-REG_RCX    = 14
-REG_RSP    = 15
-REG_RIP    = 16
-REG_EFL    = 17
-REG_CSGSFS = 18
-REG_ERR    = 19
-REG_TRAPNO = 20
-REG_OLDMASK= 21
-REG_CR2    = 22
-
+_last_fault_range = None
+_fault_lock = threading.Lock()
 
 @ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
-def sigsegv(signum, siginfo_p, ucontext_p):
-    import builtins
+def sigsegv_handler(signum, siginfo_p, ucontext_p):
+    global _last_fault_range
+
     regs = UContext.from_address(ucontext_p).uc_mcontext.gregs
-    print(list(hex(i) for i in unwind_from_rsp(regs[REG_RBP])))
-    print(builtins.open("/proc/self/maps").read(), regs[REG_RIP])
-    faulting_addr = SigSegvInfo.from_address(siginfo_p).si_addr
-    if faulting_addr is None:
-        os._exit(0)
+    fault_addr = regs.cr2
+    if fault_addr is None:
         return
 
     for (start, end) in catch:
-        if faulting_addr >= start and faulting_addr < end:
+        if fault_addr >= start and fault_addr < end:
             break
     else:
         return
 
-    print(faulting_addr, f"{hex(start)}-{hex(end)}")
+    print(hex(regs.rip), hex(fault_addr), f"{hex(start)}-{hex(end)}")
     libc.mprotect(start, end - start, 0x3)
 
-def hook_mem(start, end):
+    regs.eflags = ctypes.c_size_t(regs.eflags | (1 << 8)) # TF_MASK
+    with _fault_lock:
+        _last_fault_range = (start, end)
+
+@ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+def sigtrap_handler(signum, siginfo_p, ucontext_p):
+    global _last_fault_range
+
+    uc = UContext.from_address(ucontext_p)
+    regs = uc.uc_mcontext.gregs
+
+    regs.eflags = ctypes.c_size_t(regs.eflags & ~(1 << 8)) # ~TF_MASK
+
+    with _fault_lock:
+        if _last_fault_range is None:
+            return
+
+        start, end = _last_fault_range
+        libc.mprotect(start, end - start, 0x0)
+        _last_fault_range = None
+
+def hook_mem(start, length):
     assert start & 0xFFF == 0
-    assert end & 0xFFF == 0
-    libc.mprotect(start, end - start, 0x0)
-    catch.append((start, end))
+    assert length & 0xFFF == 0
+    libc.mprotect(start, length, 0x0)
+    catch.append((start, start + length))
+
+def install_mem_hooks():
+    print("Catching:", " ".join((f"{hex(start)}-{hex(end)}" for start, end in catch)))
+    libc.sigaction(signal.SIGSEGV, ctypes.byref(SigAction(sa_sigaction=sigsegv_handler, sa_flags=0x4)), None) # SA_SIGINFO
+    libc.sigaction(signal.SIGTRAP, ctypes.byref(SigAction(sa_sigaction=sigtrap_handler, sa_flags=0x4)), None) # SA_SIGINFO
 
 # hook_fifo = lambda g: hook_mem(rm[g].gpFifoOffset, rm[g].gpFifoOffset + rm[g].gpFifoEntries * 4)
 
-libc.sigaction(11, ctypes.byref(SigAction(sa_sigaction=sigsegv, sa_flags=0x4)), None) # SA_SIGINFO
+if __name__ == "__main__":
+    CUhandle = ctypes.c_void_p
+    libcuda = ctypes.CDLL("/lib64/libcuda.so")
+    libcuda.cuInit(0)
 
-hevc2.run()
-hevc2.run()
-# print(tokens)
+    dev = CUhandle()
+    ctx = CUhandle()
+
+    libcuda.cuDeviceGet(ctypes.byref(dev), 0)
+    libcuda.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev)
+    libcuda.cuCtxPushCurrent(ctx)
+
+    hevc2.run()
