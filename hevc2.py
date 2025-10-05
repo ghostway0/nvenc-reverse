@@ -294,3 +294,4 @@ if __name__ == "__main__":
     libcuda.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev)
     libcuda.cuCtxPushCurrent(ctx)
     run()
+    print(wrote)

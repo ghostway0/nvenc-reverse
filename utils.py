@@ -160,8 +160,44 @@ class UContext(RStructure):
         ("__ssp", ctypes.c_ulonglong * 4),
     ]
 
+def store_operand_x86(src: bytes):
+    REGS = ["rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi", "r8","r9","r10","r11","r12","r13","r14","r15"]
+
+    it = iter(src)
+
+    first = next(it)
+    rex = first if 0x40 <= first < 0x4f else 0
+    rex_r, rex_b, rex_w = (rex >> 2) & 1, (rex >> 0) & 1, (rex >> 3) & 1
+
+    opcode = next(it) if rex else first
+
+    if opcode not in (0x89, 0xc7):
+        return None
+
+    modrm = next(it)
+    mod, reg, rm = (modrm >> 6) & 0x3, (modrm >> 3) & 0x7, modrm & 0x7
+
+    sib = next(it) if mod != 0b11 and rm == 0b100 else 0
+
+    if mod == 0 and rm == 0b101:
+        return None
+
+    disp_size = (0, 1, 4, 0)[mod]
+    if mod == 0b00 and rm == 0b101:
+        disp_size = 4
+
+    disp = int.from_bytes(bytes(next(it) in range(disp_size) if disp_size else 0), "little")
+
+    if opcode == 0x89:
+        reg_index = reg | (rex_r << 3)
+        return REGS[reg_index] #if rex_w else "e" + REGS[reg_index][1:]
+    elif opcode == 0xc7:
+        return int.from_bytes(bytes(next(it) for _ in range(4)), "little")
+
 _last_fault_range = None
 _fault_lock = threading.Lock()
+
+wrote = []
 
 @ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 def sigsegv_handler(signum, siginfo_p, ucontext_p):
@@ -178,8 +214,17 @@ def sigsegv_handler(signum, siginfo_p, ucontext_p):
     else:
         return
 
-    print(hex(regs.rip - 0x5000000), hex(fault_addr), f"{hex(start)}-{hex(end)}")
+    # HACK: base of libnvcuvid in hevc.c in gdb is 0x00007ffff0e00000
+    print(hex(regs.rip - 0x5000000), hex(fault_addr), f"{hex(start)}-{hex(end)}") # TODO: callbacks
+
     libc.mprotect(start, end - start, 0x3)
+
+    r = store_operand_x86(ctypes.string_at(regs.rip, 15))
+    if isinstance(r, int):
+        wrote.append((hex(regs.rip), hex(r)))
+    elif isinstance(r, str):
+        wrote.append((hex(regs.rip), hex(getattr(regs, r))))
+    print(wrote)
 
     regs.eflags = ctypes.c_size_t(regs.eflags | (1 << 8))
     with _fault_lock:
@@ -202,4 +247,3 @@ def sigtrap_handler(signum, siginfo_p, ucontext_p):
         start, end = _last_fault_range
         libc.mprotect(start, end - start, 0x0)
         _last_fault_range = None
-
