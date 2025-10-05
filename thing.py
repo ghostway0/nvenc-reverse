@@ -163,7 +163,7 @@ def get_backtrace(max_frames=32):
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p)
 def hook_ioctl(fd, cmd, argp):
     token = struct.pack("I", 0xc36f0108)
-    d, ty, nr, paramsz = (cmd >> 30) & 3, (cmd >> 8) & 0xff, cmd & 0xff, (cmd >> 16) & 0xfff
+    d, paramsz, ty, nr = (cmd >> 30) & 3, (cmd >> 16) & 0xfff, (cmd >> 8) & 0xff, cmd & 0xff
     argbuf = bytearray(ctypes.string_at(argp, paramsz))
 
     print(fds[fd], hex(nr), f"({ioctl_map[(fds[fd].decode(), nr)]})" if (fds[fd].decode(), nr) in ioctl_map else "")
