@@ -81,7 +81,6 @@ def install_mem_hooks():
     libc.sigaction(signal.SIGSEGV, ctypes.byref(SigAction(sa_sigaction=sigsegv_handler, sa_flags=0x4)), None)
     libc.sigaction(signal.SIGTRAP, ctypes.byref(SigAction(sa_sigaction=sigtrap_handler, sa_flags=0x4)), None)
 
-
 def library_base(lib):
     return ctypes.c_uint64.from_address(lib._handle)
 
@@ -197,8 +196,6 @@ def store_operand_x86(src: bytes):
 _last_fault_range = None
 _fault_lock = threading.Lock()
 
-wrote = []
-
 @ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 def sigsegv_handler(signum, siginfo_p, ucontext_p):
     global _last_fault_range
@@ -214,17 +211,16 @@ def sigsegv_handler(signum, siginfo_p, ucontext_p):
     else:
         return
 
-    # HACK: base of libnvcuvid in hevc.c in gdb is 0x00007ffff0e00000
-    print(hex(regs.rip - 0x5000000), hex(fault_addr), f"{hex(start)}-{hex(end)}") # TODO: callbacks
-
     libc.mprotect(start, end - start, 0x3)
 
     r = store_operand_x86(ctypes.string_at(regs.rip, 15))
+
+    # HACK: base of libnvcuvid in hevc.c in gdb is 0x00007ffff0e00000
     if isinstance(r, int):
-        wrote.append((hex(regs.rip), hex(r)))
+        wrote = r
     elif isinstance(r, str):
-        wrote.append((hex(regs.rip), hex(getattr(regs, r))))
-    print(wrote)
+        wrote = getattr(regs, r)
+    print(f"{hex(start)}-{hex(end)} @{hex(regs.rip - 0x5000000)}", f"{hex(fault_addr)}={hex(wrote)}") # TODO: callbacks
 
     regs.eflags = ctypes.c_size_t(regs.eflags | (1 << 8))
     with _fault_lock:

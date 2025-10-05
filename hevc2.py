@@ -161,6 +161,7 @@ class HEVCDecoder:
 
         @PFNVIDDECODECALLBACK
         def decode_cb(user_data, pic_params):
+            print(pic_params.contents)
             result = libnvcuvid.cuvidDecodePicture(self.ctx.decoder, pic_params)
             return 1 if result == CUDA_SUCCESS else 0
 
@@ -170,7 +171,9 @@ class HEVCDecoder:
             if disp.picture_index < len(self.ctx.surface_in_use):
                 self.ctx.surface_in_use[disp.picture_index] = True
             self.ctx.frame_queue.put(disp)
-            os._exit(0)
+            # from utils import wrote
+            # print(wrote)
+            # os._exit(0)
             return 1
 
         self.callbacks = (sequence_cb, decode_cb, display_cb)
@@ -267,7 +270,7 @@ class HEVCDecoder:
 def run():
     decoder = HEVCDecoder()
     if decoder.create_parser():
-        with open("video.h265", "rb") as f:
+        with open("video3.h265", "rb") as f:
             print("start")
             decoder.parse_data(f.read())
 
@@ -294,4 +297,3 @@ if __name__ == "__main__":
     libcuda.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev)
     libcuda.cuCtxPushCurrent(ctx)
     run()
-    print(wrote)

@@ -73,7 +73,6 @@ def hook_open(path, flags):
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
 def hook_openat(dirfd, path, flags):
-    print("open")
     r = original["openat"](ctypes.c_int(dirfd), ctypes.c_void_p(path), ctypes.c_int(flags))
     s = ctypes.string_at(path, 256)
     fds[r] = s[:s.find(b"\0")]
@@ -112,17 +111,20 @@ class NVOS54_PARAMETERS(RStructure):
 
 tokens = []
 
+original = {}
+
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p)
 def hook_ioctl(fd, cmd, argp):
     token = struct.pack("I", 0xc36f0108)
     d, ty, nr, paramsz = (cmd >> 30) & 3, (cmd >> 8) & 0xff, cmd & 0xff, (cmd >> 16) & 0xfff
     argbuf = bytearray(ctypes.string_at(argp, paramsz))
-    print(fds[fd], hex(nr))
+    # print(fds[fd], hex(nr))
 
     if token in bytes(argbuf):
         params = NVOS54_PARAMETERS.from_address(argp)
         # hparent = int.from_bytes(bytes(argbuf[4:8]), "little")
         gpfifos.append(params.hObject)
+        print(rm[params.hObject])
         r = original["ioctl"](ctypes.c_int(fd), ctypes.c_ulong(cmd), ctypes.c_void_p(argp))
         tokens.append(NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN_PARAMS.from_address(params.params).workSubmitToken)
         return r
@@ -138,19 +140,19 @@ def hook_ioctl(fd, cmd, argp):
         return r
 
     if fds[fd] == b"/dev/nvidiactl" and nr == 0x57:
-        print(NVOS46_PARAMETERS.from_buffer(argbuf))
+        # print(NVOS46_PARAMETERS.from_buffer(argbuf))
         r = original["ioctl"](ctypes.c_int(fd), ctypes.c_ulong(cmd), ctypes.c_void_p(argp))
         argbuf = bytearray(ctypes.string_at(argp, paramsz))
-        print(NVOS46_PARAMETERS.from_buffer(argbuf))
+        # print(NVOS46_PARAMETERS.from_buffer(argbuf))
         return r
 
     return original["ioctl"](ctypes.c_int(fd), ctypes.c_ulong(cmd), ctypes.c_void_p(argp))
 
-# original["ioctl"] = hook(libc["ioctl"], hook_ioctl)
-# original["open"] = hook(libc["open"], hook_open)
-# original["openat"] = hook(libc["openat"], hook_openat)
-
 if __name__ == "__main__":
+    import hevc2
+    original["open"] = hook(hevc2.libc["open"], hook_open)
+    original["openat"] = hook(hevc2.libc["openat"], hook_openat)
+
     CUhandle = ctypes.c_void_p
     libcuda = ctypes.CDLL("/lib64/libcuda.so")
     libcuda.cuInit(0)
@@ -158,9 +160,9 @@ if __name__ == "__main__":
     dev = CUhandle()
     ctx = CUhandle()
 
+    original["ioctl"] = hook(hevc2.libc["ioctl"], hook_ioctl)
     libcuda.cuDeviceGet(ctypes.byref(dev), 0)
     libcuda.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev)
     libcuda.cuCtxPushCurrent(ctx)
 
-    import hevc2
     hevc2.run()
