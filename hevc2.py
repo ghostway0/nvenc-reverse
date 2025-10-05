@@ -162,6 +162,7 @@ class HEVCDecoder:
         @PFNVIDDECODECALLBACK
         def decode_cb(user_data, pic_params):
             print(pic_params.contents)
+            # print(ctypes.c_uint64.from_address(pic_params.contents.pBitstreamData))
             result = libnvcuvid.cuvidDecodePicture(self.ctx.decoder, pic_params)
             return 1 if result == CUDA_SUCCESS else 0
 
@@ -194,6 +195,7 @@ class HEVCDecoder:
 
             self.ctx.decoder = CUvideodecoder()
             result = libnvcuvid.cuvidCreateDecoder(ctypes.byref(self.ctx.decoder), ctypes.byref(create_info))
+            print(result)
             print(hex(ctypes.c_uint64.from_address(libnvcuvid._handle).value))
 
             from thing import hook_mem, install_mem_hooks
@@ -270,7 +272,7 @@ class HEVCDecoder:
 def run():
     decoder = HEVCDecoder()
     if decoder.create_parser():
-        with open("video3.h265", "rb") as f:
+        with open("video.h265", "rb") as f:
             print("start")
             decoder.parse_data(f.read())
 

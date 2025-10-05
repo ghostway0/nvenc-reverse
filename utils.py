@@ -48,7 +48,7 @@ def hook(addr, f):
         return r
     return round_trip
 
-def unwind_from_rsp(rbp):
+def unwind(rbp):
     trace = []
     while rbp:
         prev_rbp = ctypes.c_uint64.from_address(rbp).value
@@ -220,6 +220,7 @@ def sigsegv_handler(signum, siginfo_p, ucontext_p):
         wrote = r
     elif isinstance(r, str):
         wrote = getattr(regs, r)
+    # t = " ".join([hex(regs.rip - 0x5000000)] + [hex(a - 0x5000000) for a in unwind(regs.rbp)])
     print(f"{hex(start)}-{hex(end)} @{hex(regs.rip - 0x5000000)}", f"{hex(fault_addr)}={hex(wrote)}") # TODO: callbacks
 
     regs.eflags = ctypes.c_size_t(regs.eflags | (1 << 8))

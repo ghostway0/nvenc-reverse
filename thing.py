@@ -1,6 +1,24 @@
-import ctypes, os, struct, time, signal, threading
+import ctypes, os, struct, time, signal, threading, inspect
 
 from utils import *
+
+ioctl_map = {}
+
+import nv_gpu
+for name, value in inspect.getmembers(nv_gpu):
+    if not name.isupper():
+        continue
+    if not isinstance(value, int):
+        continue
+
+    if "UVM" in name:
+        dev = "/dev/nvidia-uvm"
+    elif "NV_ESC_" in name:
+        dev = "/dev/nvidiactl"
+    else:
+        continue
+
+    ioctl_map[(dev, int(value))] = name
 
 class NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN_PARAMS(RStructure):
     _pack_ = 1
@@ -113,12 +131,43 @@ tokens = []
 
 original = {}
 
+libc = ctypes.CDLL("/lib64/libc.so.6")
+libc.backtrace.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
+libc.backtrace.restype = ctypes.c_int
+
+libc.backtrace_symbols.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
+libc.backtrace_symbols.restype = ctypes.POINTER(ctypes.c_char_p)
+
+def get_backtrace(max_frames=32):
+    excluded = [
+        "libffi",
+        "_ctypes",
+        "libpython",
+        "python3.",
+        "ffi_call",
+        "/usr/lib64/python",
+    ]
+
+    buffer = (ctypes.c_void_p * max_frames)()
+    n = libc.backtrace(buffer, max_frames)
+
+    symbols = libc.backtrace_symbols(buffer, n)
+    result = []
+    for i in range(n):
+        symbol = symbols[i].decode("utf-8", errors="replace")
+        if any(pat in symbol for pat in excluded):
+            continue
+        result.append(symbol)
+    return result
+
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p)
 def hook_ioctl(fd, cmd, argp):
     token = struct.pack("I", 0xc36f0108)
     d, ty, nr, paramsz = (cmd >> 30) & 3, (cmd >> 8) & 0xff, cmd & 0xff, (cmd >> 16) & 0xfff
     argbuf = bytearray(ctypes.string_at(argp, paramsz))
-    # print(fds[fd], hex(nr))
+
+    print(fds[fd], hex(nr), f"({ioctl_map[(fds[fd].decode(), nr)]})" if (fds[fd].decode(), nr) in ioctl_map else "")
+    print(get_backtrace())
 
     if token in bytes(argbuf):
         params = NVOS54_PARAMETERS.from_address(argp)
@@ -160,9 +209,9 @@ if __name__ == "__main__":
     dev = CUhandle()
     ctx = CUhandle()
 
-    original["ioctl"] = hook(hevc2.libc["ioctl"], hook_ioctl)
     libcuda.cuDeviceGet(ctypes.byref(dev), 0)
     libcuda.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev)
     libcuda.cuCtxPushCurrent(ctx)
 
+    original["ioctl"] = hook(hevc2.libc["ioctl"], hook_ioctl)
     hevc2.run()
