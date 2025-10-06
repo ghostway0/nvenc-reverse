@@ -131,6 +131,10 @@ libnvcuvid.cuvidMapVideoFrame.restype = CUresult
 libnvcuvid.cuvidUnmapVideoFrame.argtypes = [CUvideodecoder, ctypes.c_void_p]
 libnvcuvid.cuvidUnmapVideoFrame.restype = CUresult
 
+def gpfifo_mem_callback(r, fault_addr, rip, value):
+    # HACK: base of libnvcuvid in hevc.c in gdb is 0x00007ffff0e00000
+    print(f"{hex(r[0])}-{hex(r[1])} @{hex(rip - 0x5000000)}", f"{hex(fault_addr)}={hex(value)}")
+
 CUDA_SUCCESS = 0
 HEVC_CODEC = 8
 CHROMA_420 = 1
@@ -202,7 +206,7 @@ class HEVCDecoder:
             a = ctypes.c_uint64.from_address(self.ctx.decoder.value + 0x8).value
             b = ctypes.c_uint64.from_address(a + 0x23c4a8).value
             addr = ctypes.c_uint64.from_address(b + 0x270 * 0x6 + 0x198 + 0x60).value
-            hook_mem(addr & (~0xFFF), 0x30000)
+            hook_mem(addr & (~0xFFF), 0x30000, gpfifo_mem_callback)
             install_mem_hooks()
 
             if result == CUDA_SUCCESS:

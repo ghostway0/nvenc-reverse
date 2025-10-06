@@ -3,22 +3,28 @@ import ctypes, os, struct, time, signal, threading, inspect
 from utils import *
 
 ioctl_map = {}
+params_map = {}
 
 import nv_gpu
 for name, value in inspect.getmembers(nv_gpu):
     if not name.isupper():
-        continue
-    if not isinstance(value, int):
         continue
 
     if "UVM" in name:
         dev = "/dev/nvidia-uvm"
     elif "NV_ESC_" in name:
         dev = "/dev/nvidiactl"
+    elif "CTRL_CMD" in name:
+        dev = "NV0000"
+    elif "NV2080_CTRL_" in name:
+        dev = "/dev/nvidia0"
     else:
         continue
 
-    ioctl_map[(dev, int(value))] = name
+    if isinstance(value, int):
+        ioctl_map[(dev, int(value))] = name
+    elif inspect.isclass(value) and name.endswith("_PARAMS") and issubclass(value, ctypes.Structure):
+        params_map[name] = value
 
 class NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN_PARAMS(RStructure):
     _pack_ = 1
@@ -83,14 +89,14 @@ class NVOS21_PARAMETERS(RStructure):
 fds = {}
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
-def hook_open(path, flags):
+def _open(path, flags):
     r = original["open"](ctypes.c_void_p(path), ctypes.c_int(flags))
     s = ctypes.string_at(path, 256)
     fds[r] = s[:s.find(b"\0")]
     return r
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
-def hook_openat(dirfd, path, flags):
+def _openat(dirfd, path, flags):
     r = original["openat"](ctypes.c_int(dirfd), ctypes.c_void_p(path), ctypes.c_int(flags))
     s = ctypes.string_at(path, 256)
     fds[r] = s[:s.find(b"\0")]
@@ -161,17 +167,22 @@ def get_backtrace(max_frames=32):
     return result
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p)
-def hook_ioctl(fd, cmd, argp):
-    token = struct.pack("I", 0xc36f0108)
+def _ioctl(fd, cmd, argp):
     d, paramsz, ty, nr = (cmd >> 30) & 3, (cmd >> 16) & 0xfff, (cmd >> 8) & 0xff, cmd & 0xff
-    argbuf = bytearray(ctypes.string_at(argp, paramsz))
+    ioctl_name = ioctl_map.get((fds[fd].decode(), nr))
 
-    print(fds[fd], hex(nr), f"({ioctl_map[(fds[fd].decode(), nr)]})" if (fds[fd].decode(), nr) in ioctl_map else "")
+    print(fds[fd], hex(nr), f"({ioctl_name})" if ioctl_name else "")
     print(get_backtrace())
 
-    if token in bytes(argbuf):
+    if ioctl_name and (ioctl_name + "_PARAMS") in params_map:
+        params_type = params_map[ioctl_name + "_PARAMS"]
+        params = params_type.from_address(argp)
+        for field, _ in params_type._fields_:
+            print(f"  {field} = {getattr(params, field)}")
+        old_params = params
+
+    if struct.pack("I", 0xc36f0108) in ctypes.string_at(argp, paramsz):
         params = NVOS54_PARAMETERS.from_address(argp)
-        # hparent = int.from_bytes(bytes(argbuf[4:8]), "little")
         gpfifos.append(params.hObject)
         print(rm[params.hObject])
         r = original["ioctl"](ctypes.c_int(fd), ctypes.c_ulong(cmd), ctypes.c_void_p(argp))
@@ -180,7 +191,7 @@ def hook_ioctl(fd, cmd, argp):
 
     if nr == 0x2b:
         r = original["ioctl"](ctypes.c_int(fd), ctypes.c_ulong(cmd), ctypes.c_void_p(argp))
-        params = NVOS21_PARAMETERS.from_buffer(argbuf)
+        params = NVOS21_PARAMETERS.from_address(argp)
         hparent = params.hObjectNew
         alloc_params = NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS.from_buffer(
             bytearray(ctypes.string_at(params.pAllocParms, ctypes.sizeof(NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS)))
@@ -188,19 +199,24 @@ def hook_ioctl(fd, cmd, argp):
         rm[hparent] = alloc_params
         return r
 
-    if fds[fd] == b"/dev/nvidiactl" and nr == 0x57:
-        # print(NVOS46_PARAMETERS.from_buffer(argbuf))
-        r = original["ioctl"](ctypes.c_int(fd), ctypes.c_ulong(cmd), ctypes.c_void_p(argp))
-        argbuf = bytearray(ctypes.string_at(argp, paramsz))
-        # print(NVOS46_PARAMETERS.from_buffer(argbuf))
-        return r
+    if nr == 0x2a:
+        params = NVOS54_PARAMETERS.from_address(argp)
+        print(f"{hex(params.cmd)}", f"({ioctl_map[('NV0000', params.cmd)]})" if ("NV0000", params.cmd) in ioctl_map else "")
 
-    return original["ioctl"](ctypes.c_int(fd), ctypes.c_ulong(cmd), ctypes.c_void_p(argp))
+    r = original["ioctl"](ctypes.c_int(fd), ctypes.c_ulong(cmd), ctypes.c_void_p(argp))
+    if ioctl_name and (ioctl_name + "_PARAMS") in params_map:
+        params_type = params_map[ioctl_name + "_PARAMS"]
+        new_params = params_type.from_address(argp)
+        for field, _ in params_type._fields_:
+            new_value = getattr(new_params, field)
+            if getattr(old_params, field) != new_value:
+                print(f"(!){field} = {new_value}")
+    return r
 
 if __name__ == "__main__":
     import hevc2
-    original["open"] = hook(hevc2.libc["open"], hook_open)
-    original["openat"] = hook(hevc2.libc["openat"], hook_openat)
+    original["open"] = hook(hevc2.libc["open"], _open)
+    original["openat"] = hook(hevc2.libc["openat"], _openat)
 
     CUhandle = ctypes.c_void_p
     libcuda = ctypes.CDLL("/lib64/libcuda.so")
@@ -213,5 +229,5 @@ if __name__ == "__main__":
     libcuda.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev)
     libcuda.cuCtxPushCurrent(ctx)
 
-    original["ioctl"] = hook(hevc2.libc["ioctl"], hook_ioctl)
+    original["ioctl"] = hook(hevc2.libc["ioctl"], _ioctl)
     hevc2.run()

@@ -69,15 +69,15 @@ class SigAction(RStructure):
 
 catch = []
 
-def hook_mem(start, length):
+def hook_mem(start, length, callback=None):
     assert start & 0xFFF == 0
     assert length & 0xFFF == 0
     libc.mprotect(start, length, 0x0)
-    catch.append((start, start + length))
+    catch.append((start, start + length, callback))
 
 
 def install_mem_hooks():
-    print("Catching:", " ".join((f"{hex(start)}-{hex(end)}" for start, end in catch)))
+    print("Catching:", " ".join((f"{hex(start)}-{hex(end)}" for start, end, _ in catch)))
     libc.sigaction(signal.SIGSEGV, ctypes.byref(SigAction(sa_sigaction=sigsegv_handler, sa_flags=0x4)), None)
     libc.sigaction(signal.SIGTRAP, ctypes.byref(SigAction(sa_sigaction=sigtrap_handler, sa_flags=0x4)), None)
 
@@ -159,7 +159,7 @@ class UContext(RStructure):
         ("__ssp", ctypes.c_ulonglong * 4),
     ]
 
-def store_operand_x86(src: bytes):
+def store_operand_x86(src: bytes) -> str | int:
     REGS = ["rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi", "r8","r9","r10","r11","r12","r13","r14","r15"]
 
     it = iter(src)
@@ -205,7 +205,7 @@ def sigsegv_handler(signum, siginfo_p, ucontext_p):
     if fault_addr is None:
         return
 
-    for (start, end) in catch:
+    for (start, end, callback) in catch:
         if fault_addr >= start and fault_addr < end:
             break
     else:
@@ -214,16 +214,12 @@ def sigsegv_handler(signum, siginfo_p, ucontext_p):
     libc.mprotect(start, end - start, 0x3)
 
     r = store_operand_x86(ctypes.string_at(regs.rip, 15))
+    value = r if isinstance(r, int) else getattr(regs, r)
 
-    # HACK: base of libnvcuvid in hevc.c in gdb is 0x00007ffff0e00000
-    if isinstance(r, int):
-        wrote = r
-    elif isinstance(r, str):
-        wrote = getattr(regs, r)
-    # t = " ".join([hex(regs.rip - 0x5000000)] + [hex(a - 0x5000000) for a in unwind(regs.rbp)])
-    print(f"{hex(start)}-{hex(end)} @{hex(regs.rip - 0x5000000)}", f"{hex(fault_addr)}={hex(wrote)}") # TODO: callbacks
+    if callback is not None:
+        callback((start, end), fault_addr, regs.rip, value)
 
-    regs.eflags = ctypes.c_size_t(regs.eflags | (1 << 8))
+    regs.eflags = ctypes.c_size_t(regs.eflags | (1 << 8)) # TF_MASK
     with _fault_lock:
         _last_fault_range = (start, end)
 
@@ -235,7 +231,7 @@ def sigtrap_handler(signum, siginfo_p, ucontext_p):
     uc = UContext.from_address(ucontext_p)
     regs = uc.uc_mcontext.gregs
 
-    regs.eflags = ctypes.c_size_t(regs.eflags & ~(1 << 8))
+    regs.eflags = ctypes.c_size_t(regs.eflags & ~(1 << 8)) # ~TF_MASK
 
     with _fault_lock:
         if _last_fault_range is None:
