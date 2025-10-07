@@ -11,6 +11,12 @@ libc.mprotect.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
 libc.sigaction.restype = ctypes.c_int
 libc.sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
 
+libc.backtrace.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
+libc.backtrace.restype = ctypes.c_int
+
+libc.backtrace_symbols.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
+libc.backtrace_symbols.restype = ctypes.POINTER(ctypes.c_char_p)
+
 class RStructure(ctypes.Structure):
     def __repr__(self):
         field_strs = []
@@ -240,3 +246,25 @@ def sigtrap_handler(signum, siginfo_p, ucontext_p):
         start, end = _last_fault_range
         libc.mprotect(start, end - start, 0x0)
         _last_fault_range = None
+
+def get_backtrace(max_frames=32):
+    excluded = [
+        "libffi",
+        "_ctypes",
+        "libpython",
+        "python3.",
+        "ffi_call",
+        "/usr/lib64/python",
+    ]
+
+    buffer = (ctypes.c_void_p * max_frames)()
+    n = libc.backtrace(buffer, max_frames)
+
+    symbols = libc.backtrace_symbols(buffer, n)
+    result = []
+    for i in range(n):
+        symbol = symbols[i].decode("utf-8", errors="replace")
+        if any(pat in symbol for pat in excluded):
+            continue
+        result.append(symbol)
+    return result

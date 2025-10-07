@@ -19,15 +19,7 @@ libc.backtrace.restype = ctypes.c_int
 libc.backtrace_symbols.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
 libc.backtrace_symbols.restype = ctypes.POINTER(ctypes.c_char_p)
 
-def get_backtrace(max_frames=32):
-    buffer = (ctypes.c_void_p * max_frames)()
-    n = libc.backtrace(buffer, max_frames)
-
-    symbols = libc.backtrace_symbols(buffer, n)
-    result = []
-    for i in range(n):
-        result.append(symbols[i].decode("utf-8", errors="replace"))
-    return result
+from utils import get_backtrace
 
 class RStructure(ctypes.Structure):
     def __repr__(self):
@@ -80,7 +72,6 @@ class CUVIDPROCPARAMS(RStructure):
     ]
 
 class CUVIDPICPARAMS(RStructure):
-    _pack_ = 1
     _fields_ = [
         ('PicWidthInMbs', ctypes.c_int), ('FrameHeightInMbs', ctypes.c_int), ('CurrPicIdx', ctypes.c_int),
         ('field_pic_flag', ctypes.c_int), ('bottom_field_flag', ctypes.c_int), ('second_field', ctypes.c_int),
@@ -133,7 +124,8 @@ libnvcuvid.cuvidUnmapVideoFrame.restype = CUresult
 
 def gpfifo_mem_callback(r, fault_addr, rip, value):
     # HACK: base of libnvcuvid in hevc.c in gdb is 0x00007ffff0e00000
-    print(f"{hex(r[0])}-{hex(r[1])} @{hex(rip - 0x5000000)}", f"{hex(fault_addr)}={hex(value)}")
+    print(" ".join(get_backtrace()))
+    print(f"{hex(r[0])}-{hex(r[1])}", f"{hex(fault_addr)}={hex(value)}")
 
 CUDA_SUCCESS = 0
 HEVC_CODEC = 8

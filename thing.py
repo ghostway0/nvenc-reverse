@@ -134,45 +134,16 @@ class NVOS54_PARAMETERS(RStructure):
     ]
 
 tokens = []
-
 original = {}
 
 libc = ctypes.CDLL("/lib64/libc.so.6")
-libc.backtrace.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
-libc.backtrace.restype = ctypes.c_int
-
-libc.backtrace_symbols.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
-libc.backtrace_symbols.restype = ctypes.POINTER(ctypes.c_char_p)
-
-def get_backtrace(max_frames=32):
-    excluded = [
-        "libffi",
-        "_ctypes",
-        "libpython",
-        "python3.",
-        "ffi_call",
-        "/usr/lib64/python",
-    ]
-
-    buffer = (ctypes.c_void_p * max_frames)()
-    n = libc.backtrace(buffer, max_frames)
-
-    symbols = libc.backtrace_symbols(buffer, n)
-    result = []
-    for i in range(n):
-        symbol = symbols[i].decode("utf-8", errors="replace")
-        if any(pat in symbol for pat in excluded):
-            continue
-        result.append(symbol)
-    return result
-
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p)
 def _ioctl(fd, cmd, argp):
     d, paramsz, ty, nr = (cmd >> 30) & 3, (cmd >> 16) & 0xfff, (cmd >> 8) & 0xff, cmd & 0xff
     ioctl_name = ioctl_map.get((fds[fd].decode(), nr))
 
     print(fds[fd], hex(nr), f"({ioctl_name})" if ioctl_name else "")
-    print(get_backtrace())
+    print(" ".join(get_backtrace()))
 
     if ioctl_name and (ioctl_name + "_PARAMS") in params_map:
         params_type = params_map[ioctl_name + "_PARAMS"]
